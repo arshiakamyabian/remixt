@@ -14,6 +14,7 @@ export type ChallengeStem = {
   track_title: string;
   track_duration: number | null;
   track_bpm: number | null;
+  track_key: string | null;
   artist_name: string;
   artist_id: string;
 };
@@ -45,7 +46,7 @@ async function stemsById(ids: string[]): Promise<Map<string, ChallengeStem>> {
   if (ids.length === 0) return new Map();
   const rows = await sql<ChallengeStem[]>`
     SELECT stems.id, stems.kind, stems.peaks_json, tracks.title AS track_title, tracks.duration AS track_duration,
-           tracks.bpm AS track_bpm, users.artist_name, users.id AS artist_id
+           tracks.bpm AS track_bpm, tracks.music_key AS track_key, users.artist_name, users.id AS artist_id
     FROM stems JOIN tracks ON tracks.id = stems.track_id JOIN users ON users.id = tracks.owner_id
     WHERE stems.id IN ${sql(ids)}
   `;

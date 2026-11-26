@@ -18,10 +18,11 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       peaks_json: string;
       track_duration: number | null;
       track_bpm: number | null;
+      track_key: string | null;
     }[]
   >`
     SELECT part.id, part.kind, tracks.title AS track_title, users.artist_name, part.peaks_json,
-           tracks.duration AS track_duration, tracks.bpm AS track_bpm
+           tracks.duration AS track_duration, tracks.bpm AS track_bpm, tracks.music_key AS track_key
     FROM stems
     JOIN stems part ON part.track_id = stems.track_id AND part.id <> stems.id
                    AND part.kind IN ('vocals', 'drums', 'bass', 'other')

@@ -336,6 +336,7 @@ describe("saving", () => {
       track_title: "v",
       track_duration: 16,
       track_bpm: 120,
+      track_key: null,
       stem_artist_name: "Test",
     };
     const back = laneFromApi(row);

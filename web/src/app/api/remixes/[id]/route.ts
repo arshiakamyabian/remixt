@@ -33,7 +33,8 @@ export async function GET(
   const lanes = await sql`
     SELECT remix_lanes.*, stems.kind, stems.file_url, stems.peaks_json,
            tracks.title as track_title, tracks.duration as track_duration,
-           tracks.bpm as track_bpm, users.artist_name as stem_artist_name
+           tracks.bpm as track_bpm, tracks.music_key as track_key,
+           users.artist_name as stem_artist_name
     FROM remix_lanes
     JOIN stems ON stems.id = remix_lanes.stem_id
     JOIN tracks ON tracks.id = stems.track_id

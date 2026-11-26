@@ -6,7 +6,7 @@ import { PRE_ROLL, TAIL, arrangeVocal, beatStructure } from "./arrange";
 import { audioEngine } from "./audioEngine";
 import { hearBeats } from "./neuralBeats";
 import { fetchStem } from "./stemFetch";
-import { bestKeyShift, keyLabel } from "./musicKey";
+import { bestKeyShift, keyId, keyLabel } from "./musicKey";
 import { withoutHistory } from "./studioHistory";
 import {
   DEFAULT_FX,
@@ -94,10 +94,14 @@ export async function listenForBeats() {
 }
 
 const keyAttempted = new Set<string>();
+/** Stem ids whose track key we've already tried to backfill this session. */
+const keyBackfilled = new Set<string>();
 
 /**
  * Fills in the key of any lane that doesn't have one yet, in the
  * background, so the lane header can show it without the user asking.
+ * When the track also doesn't have a stored key, posts it back so the
+ * library gets it filled in over time.
  */
 export async function detectMissingKeys() {
   const { lanes } = useStudioStore.getState();
@@ -112,6 +116,16 @@ export async function detectMissingKeys() {
         withoutHistory(lane.laneId, { musicalKey: analysis.key }, () =>
           useStudioStore.getState().setLaneKey(lane.laneId, analysis.key)
         );
+        if (!keyBackfilled.has(lane.stemId)) {
+          keyBackfilled.add(lane.stemId);
+          // The server only writes it when the track hasn't got one, so this
+          // is safe to call from any browser that detects first.
+          void fetch(`/api/stems/${lane.stemId}/key`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: keyId(analysis.key) }),
+          }).catch(() => {});
+        }
       }
     } catch {
       // Leave it unknown; the key can still be picked by hand.

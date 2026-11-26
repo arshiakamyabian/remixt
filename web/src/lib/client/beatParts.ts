@@ -50,7 +50,8 @@ export function placeStems(sourceLaneId: string, stems: LoadableStem[], { replac
   const source = store.lanes.find((l) => l.laneId === sourceLaneId);
   if (!source || !stems.length) return [];
   startNewStep();
-  const ids = stems.map((stem) => store.addStem(stem));
+  // Parts of a song whose beat is already in the mix: by definition compatible.
+  const ids = stems.map((stem) => store.addStem(stem, { bypassGate: true }));
   store.applyLanePatches(
     Object.fromEntries(
       ids.map((id) => [

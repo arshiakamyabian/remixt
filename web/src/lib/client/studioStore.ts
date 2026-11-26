@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { semitonesToMatch, transposeKey, type MusicalKey } from "./musicKey";
+import { parseKeyId, semitonesToMatch, transposeKey, type MusicalKey } from "./musicKey";
+import { checkCompatibility, type Compatibility } from "./mixCompatibility";
 import { isBacking, type StemKind } from "@/lib/stemKinds";
 import {
   MIN_CLIP,
@@ -204,6 +205,8 @@ export type LoadableStem = {
   peaks_json: string;
   track_duration: number | null;
   track_bpm?: number | null;
+  /** keyId() of the detected musical key, if known. */
+  track_key?: string | null;
 };
 
 export type FxPreset = {
@@ -351,6 +354,9 @@ type StudioState = {
   markers: Marker[];
   crossfader: number;
   pads: Pad[];
+  /** When on, addStem blocks songs whose BPM or key clash with the project. */
+  strictMix: boolean;
+  bpmTolerance: number;
   /** The saved remix this mix was opened from, if any — a save becomes a remix of it. */
   sourceRemix: SourceRemix | null;
   /** The challenge this mix is an entry for, if it was started from one. */
@@ -365,7 +371,7 @@ type StudioState = {
   /** Sets several lanes' starts at once — a group drag. */
   setLaneOffsets: (offsets: Record<string, number>) => void;
 
-  addStem: (stem: LoadableStem) => string;
+  addStem: (stem: LoadableStem, options?: { bypassGate?: boolean }) => string;
   removeLane: (laneId: string) => void;
   duplicateLane: (laneId: string) => void;
   /** Moves a lane up (-1) or down (1) the list. */
@@ -411,6 +417,8 @@ type StudioState = {
   updateMarker: (id: string, patch: Partial<Omit<Marker, "id">>) => void;
   removeMarker: (id: string) => void;
   setCrossfader: (position: number) => void;
+  setStrictMix: (strict: boolean) => void;
+  setBpmTolerance: (tolerance: number) => void;
   setLaneXfade: (laneId: string, side: "a" | "b" | null) => void;
   /** Flips a clip backwards/forwards, or sets its own speed (1 = the lane's). */
   setClipOptions: (laneId: string, index: number, patch: ClipOptions) => void;
@@ -461,6 +469,10 @@ export type ProjectSettings = {
   crossfader: number;
   pads: Pad[];
   master: MasterFx;
+  /** Only add songs whose BPM and key fit the project. On for new projects, off for existing ones. */
+  strictMix: boolean;
+  /** Fractional BPM tolerance (±) for the mix-compatibility check. */
+  bpmTolerance: number;
 };
 
 export const PROJECT_DEFAULTS: ProjectSettings = {
@@ -473,6 +485,8 @@ export const PROJECT_DEFAULTS: ProjectSettings = {
   crossfader: 0.5,
   pads: [],
   master: DEFAULT_MASTER,
+  strictMix: false,
+  bpmTolerance: 0.06,
 };
 
 /** A saved or shared master setting made safe: numbers in range, defaults for the rest. */
@@ -577,6 +591,36 @@ export function effectiveKey(lane: StudioLane): MusicalKey | null {
   return lane.musicalKey ? transposeKey(lane.musicalKey, lane.pitchSemitones) : null;
 }
 
+/** The project tempo + key for the mix-compatibility check. */
+export function projectReference(state: Pick<StudioState, "lanes" | "projectBpm">) {
+  const ref = keyReference(state.lanes);
+  return { bpm: state.projectBpm, key: ref ? effectiveKey(ref) : null };
+}
+
+/**
+ * Whether `stem` fits the project given its current lanes and settings.
+ * The first lane is always compatible — it sets the reference.
+ */
+export function compatibilityOfStem(
+  state: Pick<StudioState, "lanes" | "projectBpm" | "bpmTolerance">,
+  stem: LoadableStem,
+): Compatibility {
+  if (state.lanes.length === 0) {
+    return {
+      compatible: true,
+      unknown: false,
+      bpm: { compatible: true, known: !!stem.track_bpm },
+      key: { compatible: true, known: !!stem.track_key },
+    };
+  }
+  const reference = projectReference(state);
+  return checkCompatibility(
+    { bpm: stem.track_bpm, key: stem.track_key ? parseKeyId(stem.track_key) : null },
+    reference,
+    { bpmTolerance: state.bpmTolerance },
+  );
+}
+
 function withKeyMatched(lane: StudioLane, reference: StudioLane | undefined): StudioLane {
   const target = reference && effectiveKey(reference);
   if (!target || !lane.musicalKey || !carriesKey(lane) || lane.laneId === reference.laneId) return lane;
@@ -608,7 +652,7 @@ export function laneFromStem(stem: LoadableStem, laneId: string = crypto.randomU
     duration: originalDuration,
     offsetSeconds: 0,
     bpm: stem.track_bpm ?? null,
-    musicalKey: null,
+    musicalKey: stem.track_key ? parseKeyId(stem.track_key) : null,
     pitchSemitones: 0,
     tempoRatio: 1,
     fx: { ...DEFAULT_FX },
@@ -637,22 +681,34 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   markers: [],
   crossfader: 0.5,
   pads: [],
+  // On for new Studio sessions. loadRemix for an existing remix without
+  // this field in its project_json leaves it off, so saved work isn't
+  // suddenly blocked.
+  strictMix: true,
+  bpmTolerance: PROJECT_DEFAULTS.bpmTolerance,
   sourceRemix: null,
   challenge: null,
   selectedLaneIds: [],
   selectedClips: [],
   setChallenge: (challenge) => set({ challenge }),
 
-  addStem: (stem) => {
+  addStem: (stem, options) => {
+    const state = get();
+    if (!options?.bypassGate && state.strictMix && state.lanes.length > 0) {
+      const compat = compatibilityOfStem(state, stem);
+      // Known-and-incompatible is the only case we block. Unknown BPM/key
+      // is allowed with a warning in the UI; a first lane is handled above.
+      if (!compat.compatible && !compat.unknown) return "";
+    }
     const lane = laneFromStem(stem);
     const { laneId } = lane;
-    set((state) => {
-      const lanes = [...state.lanes, lane];
-      const wasEmpty = state.lanes.length === 0;
+    set((prev) => {
+      const lanes = [...prev.lanes, lane];
+      const wasEmpty = prev.lanes.length === 0;
       return {
         lanes,
         duration: recomputeDuration(lanes),
-        projectBpm: wasEmpty ? defaultProjectBpm(lanes, state.projectBpm) : state.projectBpm,
+        projectBpm: wasEmpty ? defaultProjectBpm(lanes, prev.projectBpm) : prev.projectBpm,
       };
     });
     return laneId;
@@ -1007,6 +1063,10 @@ export const useStudioStore = create<StudioState>((set, get) => ({
 
   setCrossfader: (position) => set({ crossfader: Math.min(1, Math.max(0, position)) }),
 
+  setStrictMix: (strict) => set({ strictMix: strict }),
+
+  setBpmTolerance: (tolerance) => set({ bpmTolerance: Math.min(0.25, Math.max(0.005, tolerance)) }),
+
   setLaneXfade: (laneId, side) =>
     set((state) => ({ lanes: state.lanes.map((l) => (l.laneId === laneId ? { ...l, xfade: side } : l)) })),
 
@@ -1077,6 +1137,9 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       crossfader: 0.5,
       pads: [],
       master: DEFAULT_MASTER,
+      // Fresh Studio session: strict matching on by default.
+      strictMix: true,
+      bpmTolerance: PROJECT_DEFAULTS.bpmTolerance,
       sourceRemix: null,
       challenge: null,
       selectedLaneIds: [],
@@ -1103,6 +1166,13 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       crossfader: project?.crossfader ?? 0.5,
       pads: project?.pads ?? [],
       master: normaliseMaster(project?.master),
+      // A remix saved before this feature won't carry a value, and its
+      // lanes were chosen without the rule, so leave it off.
+      strictMix: typeof project?.strictMix === "boolean" ? project.strictMix : false,
+      bpmTolerance:
+        typeof project?.bpmTolerance === "number" && project.bpmTolerance > 0
+          ? Math.min(0.25, project.bpmTolerance)
+          : PROJECT_DEFAULTS.bpmTolerance,
       sourceRemix: source,
       challenge: null,
       selectedLaneIds: [],

@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { describeFit, rankByTempo, type Candidate } from "@/lib/client/matchFinder";
 import { previewPlayer, usePreviewState } from "@/lib/client/previewPlayer";
 import { startNewStep } from "@/lib/client/studioHistory";
-import { useStudioStore, type LoadableStem } from "@/lib/client/studioStore";
+import { compatibilityOfStem, useStudioStore, type LoadableStem } from "@/lib/client/studioStore";
 import { useStudioView } from "@/lib/client/studioView";
 
 // Part of the AI producer: the library's beats (or vocals) that would fit
@@ -33,6 +33,9 @@ function libraryStems(kind: Kind): Promise<LoadableStem[]> {
 
 export default function MatchFinder({ kind, bpm, title }: { kind: Kind; bpm: number | null; title: React.ReactNode }) {
   const lanes = useStudioStore((s) => s.lanes);
+  const strictMix = useStudioStore((s) => s.strictMix);
+  const projectBpm = useStudioStore((s) => s.projectBpm);
+  const bpmTolerance = useStudioStore((s) => s.bpmTolerance);
   const preview = usePreviewState();
   const [stems, setStems] = useState<LoadableStem[] | null>(null);
 
@@ -65,8 +68,12 @@ export default function MatchFinder({ kind, bpm, title }: { kind: Kind; bpm: num
         <ul className="flex flex-col gap-1">
           {ranked.map(({ stem, fit }) => {
             const playing = preview.current?.stemId === stem.id && preview.playing;
+            const compat = strictMix && lanes.length > 0
+              ? compatibilityOfStem({ lanes, projectBpm, bpmTolerance }, stem)
+              : null;
+            const blocked = !!compat && !compat.compatible && !compat.unknown;
             return (
-              <li key={stem.id} className="flex items-center gap-2 rounded-lg border border-border px-2 py-1.5">
+              <li key={stem.id} className={`flex items-center gap-2 rounded-lg border border-border px-2 py-1.5 ${blocked ? "opacity-60" : ""}`}>
                 <button
                   onClick={() => previewPlayer.toggle({ stemId: stem.id, title: stem.track_title, artist: stem.artist_name, kind: stem.kind })}
                   className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-raised text-[11px] hover:bg-brand hover:text-white"
@@ -79,8 +86,16 @@ export default function MatchFinder({ kind, bpm, title }: { kind: Kind; bpm: num
                   <span className="block truncate text-[10px] text-muted">
                     {stem.artist_name} · {stem.track_bpm?.toFixed(0)} BPM · {describeFit(fit)}
                   </span>
+                  {blocked && (
+                    <span className="block truncate text-[10px] text-brand-strong">Doesn&apos;t fit: {compat?.reason}</span>
+                  )}
                 </span>
-                <button onClick={() => add(stem)} className="shrink-0 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white hover:bg-brand-strong">
+                <button
+                  onClick={() => add(stem)}
+                  disabled={blocked}
+                  title={blocked ? `Doesn't fit the project: ${compat?.reason}` : undefined}
+                  className="shrink-0 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white hover:bg-brand-strong disabled:cursor-not-allowed disabled:opacity-50"
+                >
                   <Plus /> Add
                 </button>
               </li>

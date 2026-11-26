@@ -24,7 +24,10 @@ export function keyId(key: MusicalKey) {
   return `${mod12(key.tonic)}${key.mode === "major" ? "M" : "m"}`;
 }
 
+/** Reads keyId() ("9m") and also the form tracks.music_key stores ("9:minor"). */
 export function parseKeyId(id: string): MusicalKey | null {
+  const stored = id.match(/^(\d{1,2}):(major|minor)$/);
+  if (stored) return Number(stored[1]) <= 11 ? { tonic: Number(stored[1]), mode: stored[2] as MusicalKey["mode"] } : null;
   const match = id.match(/^(\d{1,2})([Mm])$/);
   if (!match) return null;
   const tonic = Number(match[1]);

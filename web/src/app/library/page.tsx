@@ -36,6 +36,7 @@ export default async function LibraryPage({
     track_private: s.track_private,
     track_mine: s.track_mine,
     track_details: songDetailsLine(s),
+    track_key: s.track_key ?? null,
   }));
 
   return (
