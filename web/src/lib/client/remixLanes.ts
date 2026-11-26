@@ -1,6 +1,6 @@
 "use client";
 
-import { isMusicalKey, type MusicalKey } from "./musicKey";
+import { isMusicalKey, parseKeyId, type MusicalKey } from "./musicKey";
 import type { StemKind } from "@/lib/stemKinds";
 import {
   DEFAULT_FX,
@@ -27,6 +27,7 @@ export type RemixLaneApi = {
   track_title: string;
   track_duration: number | null;
   track_bpm: number | null;
+  track_key: string | null;
   stem_artist_name: string;
 };
 
@@ -111,7 +112,7 @@ export function laneFromApi(lane: RemixLaneApi): StudioLane {
     duration: originalDuration / tempoRatio,
     offsetSeconds: lane.offset_seconds ?? 0,
     bpm: settings.bpm ?? lane.track_bpm,
-    musicalKey: isMusicalKey(settings.key) ? settings.key : null,
+    musicalKey: isMusicalKey(settings.key) ? settings.key : lane.track_key ? parseKeyId(lane.track_key) : null,
     pitchSemitones: lane.pitch_semitones || 0,
     tempoRatio,
     fx: { ...DEFAULT_FX, ...(settings.fx ?? {}) },
@@ -137,8 +138,8 @@ const round = (n: number, places: number) => Math.round(n * 10 ** places) / 10 *
 
 /** Serialises the project-level settings for POST /api/remixes. */
 export function projectToPayload(state: ProjectSettings): ProjectSettings {
-  const { projectBpm, masterVolume, loopEnabled, loopStart, loopEnd, markers, crossfader, pads, master } = state;
-  return { projectBpm, masterVolume, loopEnabled, loopStart, loopEnd, markers, crossfader, pads, master };
+  const { projectBpm, masterVolume, loopEnabled, loopStart, loopEnd, markers, crossfader, pads, master, strictMix, bpmTolerance } = state;
+  return { projectBpm, masterVolume, loopEnabled, loopStart, loopEnd, markers, crossfader, pads, master, strictMix, bpmTolerance };
 }
 
 function pointsToPayload(points: AutoPoint[] | undefined) {

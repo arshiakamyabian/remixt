@@ -6,6 +6,7 @@ import { ensureSchema } from "./schema";
 import { createUploadTarget, deleteStemFile, storedObject, type UploadTarget } from "./storage";
 import { normaliseTags } from "./tags";
 import { STEM_KINDS, type StemKind } from "./stemKinds";
+import { parseKeyId } from "./client/musicKey";
 
 // Songs are split in a browser — the uploader's own, or a helper's for a
 // song queued from a phone (see splitQueue.ts) — so a track arrives
@@ -14,12 +15,20 @@ import { STEM_KINDS, type StemKind } from "./stemKinds";
 
 const peaksSchema = z.array(z.number().min(0).max(1)).max(2000);
 
+/** keyId() ("9m") → how tracks.music_key stores it ("9:minor"); null when unknown. */
+function storedKey(id: string | null | undefined): string | null {
+  const key = id ? parseKeyId(id) : null;
+  return key ? `${key.tonic}:${key.mode}` : null;
+}
+
 /** What the browser that split a song sends about it. */
 export const splitTrackSchema = z.object({
   title: z.string().trim().min(1).max(200),
   filename: z.string().min(1).max(300),
   duration: z.number().positive().max(20 * 60),
   bpm: z.number().min(20).max(300).nullable(),
+  /** keyId() of the detected musical key (e.g. "9m" for A minor), when known. */
+  musicalKey: z.string().regex(/^(\d|10|11)[Mm]$/).nullable().optional(),
   vocalsPeaks: peaksSchema,
   /** Missing for a vocal recorded in the Studio, which has no beat. */
   beatPeaks: peaksSchema.optional(),
@@ -73,9 +82,10 @@ export async function createTrackForUpload(
     // A take recorded in the booth is private to its singer until they share it, as is a
     // song brought into the Studio to sing over.
     await tx`
-      INSERT INTO tracks (id, owner_id, title, original_filename, status, duration, bpm, original_url,
+      INSERT INTO tracks (id, owner_id, title, original_filename, status, duration, bpm, music_key, original_url,
                           tags, rights_confirmed_at, visibility, source_hash)
-      VALUES (${trackId}, ${ownerId}, ${data.title}, ${data.filename}, 'processing', ${data.duration}, ${data.bpm}, '',
+      VALUES (${trackId}, ${ownerId}, ${data.title}, ${data.filename}, 'processing', ${data.duration}, ${data.bpm},
+              ${storedKey(data.musicalKey)}, '',
               ${tags}, now(), ${data.recording || data.private ? "private" : "public"}, ${data.sourceHash ?? null})
     `;
     for (const kind of kinds) {

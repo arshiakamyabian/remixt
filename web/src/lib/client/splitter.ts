@@ -6,6 +6,8 @@ import { upload, type Send, type UploadTarget } from "./directUpload";
 import { fetchInSlices } from "./stemFetch";
 import { SPLITTER_MODEL_URL } from "../modelMirror";
 import { isConstrainedDevice } from "./device";
+import { analyzeMono } from "./analysis";
+import { keyId } from "./musicKey";
 import {
   STEM_BITRATES,
   type SplitOutput,
@@ -401,6 +403,41 @@ export type UploadStage =
   /** Waiting for the splitter to finish another song first. */
   | { stage: "waiting" };
 
+const ANALYSIS_RATE = 11025;
+
+/**
+ * Mono samples at the analysis rate from a stereo decode. For key detection
+ * only: resamples by picking one sample per block, which is fine for the
+ * chromagram (no anti-alias filter — key detection averages over hundreds
+ * of frames, so a bit of aliasing in the top octave doesn't move the answer).
+ */
+function monoForAnalysis(left: Float32Array, right: Float32Array): Float32Array {
+  const factor = SAMPLE_RATE / ANALYSIS_RATE;
+  const length = Math.floor(left.length / factor);
+  const mono = new Float32Array(length);
+  for (let i = 0; i < length; i++) {
+    const j = Math.floor(i * factor);
+    mono[i] = (left[j] + right[j]) * 0.5;
+  }
+  return mono;
+}
+
+/**
+ * Detects a song's musical key for the mix-compatibility rule. Reuses the
+ * Studio's analyzeMono. Returns null on any failure — the Studio backfills
+ * the key when the song is first loaded, so a miss here isn't the only
+ * chance.
+ */
+async function detectKeyFromDecode(left: Float32Array, right: Float32Array): Promise<string | null> {
+  try {
+    const mono = monoForAnalysis(left, right);
+    const analysis = await analyzeMono(mono, false);
+    return keyId(analysis.key);
+  } catch {
+    return null;
+  }
+}
+
 async function decode(file: File): Promise<{ left: Float32Array; right: Float32Array; duration: number }> {
   const data = await file.arrayBuffer();
   // An offline context at 44.1 kHz resamples whatever the file is to the
@@ -434,7 +471,7 @@ export async function splitSong(
   file: File,
   onStage: (stage: UploadStage) => void,
   { own = true, signal }: { own?: boolean; signal?: AbortSignal } = {}
-): Promise<{ result: SplitResult; duration: number }> {
+): Promise<{ result: SplitResult; duration: number; musicalKey: string | null }> {
   return splitter.exclusive(own, () => onStage({ stage: "waiting" }), async () => {
     signal?.throwIfAborted();
     // On a computer the model starts loading while the song decodes; a
@@ -449,8 +486,14 @@ export async function splitSong(
 
     onStage({ stage: "splitting", progress: 0 });
     try {
+      // Key detection runs alongside the split: the browser is free during
+      // model inference (ONNX runs in a worker), and this needs no model.
+      // On a slower device analyzeMono is still much faster than Demucs, so
+      // this hardly extends the split.
+      const keyPromise = detectKeyFromDecode(left, right);
       const result = await splitter.split(left, right, (stage, value) => onStage({ stage, progress: value }), signal);
-      return { result, duration };
+      const musicalKey = await keyPromise;
+      return { result, duration, musicalKey };
     } finally {
       // Give the memory back before uploading, and to the rest of the app.
       if (constrained) splitter.unload();
@@ -459,12 +502,19 @@ export async function splitSong(
 }
 
 /** What POST /api/tracks (or a split-queue job's /track) needs to know about a split song. */
-export function splitTrackPayload(file: { name: string }, result: SplitResult, duration: number, tags: string[]) {
+export function splitTrackPayload(
+  file: { name: string },
+  result: SplitResult,
+  duration: number,
+  tags: string[],
+  musicalKey: string | null = null,
+) {
   return {
     title: file.name.replace(/\.[^/.]+$/, "").slice(0, 200) || "Untitled",
     filename: file.name,
     duration,
     bpm: result.bpm,
+    musicalKey,
     vocalsPeaks: result.peaks.vocals,
     beatPeaks: result.peaks.beat,
     partPeaks: {
@@ -616,7 +666,7 @@ export async function uploadSong(
   const existing = sourceHash ? await alreadyThere(sourceHash, signal) : null;
   if (existing) return { id: existing.id, existing };
 
-  const { result, duration } = await splitSong(file, onStage, { signal });
+  const { result, duration, musicalKey } = await splitSong(file, onStage, { signal });
   signal?.throwIfAborted();
 
   // Sent again if it doesn't arrive: a second, unfinished copy of the
@@ -629,7 +679,7 @@ export async function uploadSong(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        ...splitTrackPayload(file, result, duration, tags),
+        ...splitTrackPayload(file, result, duration, tags, musicalKey),
         ...(sourceHash ? { sourceHash } : {}),
         ...(keepPrivate ? { private: true } : {}),
         // The upload form doesn't start without the box ticked.

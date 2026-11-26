@@ -343,6 +343,61 @@ function KeyControl() {
   );
 }
 
+function MixMatchControl() {
+  const strictMix = useStudioStore((s) => s.strictMix);
+  const bpmTolerance = useStudioStore((s) => s.bpmTolerance);
+  const setStrictMix = useStudioStore((s) => s.setStrictMix);
+  const setBpmTolerance = useStudioStore((s) => s.setBpmTolerance);
+  return (
+    <Popover
+      align="right"
+      title="Strict mix matching — only add songs whose BPM and key fit this project"
+      active={strictMix}
+      label={
+        <>
+          <Sparkles />
+          <span className="hidden 2xl:inline">Match</span>
+        </>
+      }
+    >
+      {() => (
+        <div className="flex min-w-[14rem] flex-col gap-3 text-xs">
+          <label className="flex items-center justify-between gap-3">
+            <span>
+              <span className="font-semibold text-foreground">Strict mix matching</span>
+              <span className="block text-[10px] text-muted">Blocks songs whose BPM or key would clash.</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={strictMix}
+              onChange={(e) => setStrictMix(e.target.checked)}
+              className="h-4 w-4 accent-brand"
+              aria-label="Strict mix matching"
+            />
+          </label>
+          <label className="flex items-center justify-between gap-3">
+            <span>
+              <span className="font-semibold text-foreground">BPM tolerance</span>
+              <span className="block text-[10px] text-muted">±{Math.round(bpmTolerance * 100)}% around the project tempo (half and double time count).</span>
+            </span>
+            <input
+              type="range"
+              min={0.01}
+              max={0.2}
+              step={0.01}
+              value={bpmTolerance}
+              onChange={(e) => setBpmTolerance(Number(e.target.value))}
+              className="h-1.5 w-24 accent-brand"
+              aria-label="BPM tolerance"
+              disabled={!strictMix}
+            />
+          </label>
+        </div>
+      )}
+    </Popover>
+  );
+}
+
 export default function StudioTransport({
   user,
   remixId,
@@ -646,6 +701,7 @@ export default function StudioTransport({
                   </option>
                 ))}
               </select>
+              <MixMatchControl />
             </div>
           )}
           {hasXfade && !simple && (

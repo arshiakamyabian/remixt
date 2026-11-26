@@ -8,7 +8,7 @@ import SongArt from "./SongArt";
 import Waveform from "./Waveform";
 import ReportButton from "./ReportButton";
 import { previewPlayer, usePreviewState } from "@/lib/client/previewPlayer";
-import { useStudioStore } from "@/lib/client/studioStore";
+import { compatibilityOfStem, useStudioStore } from "@/lib/client/studioStore";
 import { decodePeaks } from "@/lib/peaksCodec";
 import { KIND_INFO, STEM_KINDS, isStemKind, type StemKind } from "@/lib/stemKinds";
 
@@ -22,6 +22,7 @@ type StemWithTrack = {
   track_tags: string[] | null;
   track_duration: number | null;
   track_bpm: number | null;
+  track_key: string | null;
   artist_name: string;
   artist_id: string;
   track_has_cover?: boolean;
@@ -36,6 +37,13 @@ function formatDuration(seconds: number | null) {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** Compatible first, then unknown-data, then incompatible. */
+function rank(compat: { compatible: boolean; unknown: boolean }) {
+  if (compat.compatible) return 0;
+  if (compat.unknown) return 1;
+  return 2;
 }
 
 export default function LibraryBrowser({
@@ -57,6 +65,10 @@ export default function LibraryBrowser({
   const preview = usePreviewState();
   const router = useRouter();
   const addStem = useStudioStore((s) => s.addStem);
+  const strictMix = useStudioStore((s) => s.strictMix);
+  const projectBpm = useStudioStore((s) => s.projectBpm);
+  const bpmTolerance = useStudioStore((s) => s.bpmTolerance);
+  const lanes = useStudioStore((s) => s.lanes);
 
   const counts = useMemo(() => {
     const byKind = Object.fromEntries(STEM_KINDS.map((k) => [k, 0])) as Record<StemKind, number>;
@@ -86,7 +98,7 @@ export default function LibraryBrowser({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return all.filter(
+    const matches = all.filter(
       (s) =>
         s.kind === tab &&
         (!tag || (s.track_tags ?? []).includes(tag)) &&
@@ -95,7 +107,24 @@ export default function LibraryBrowser({
           s.artist_name.toLowerCase().includes(q) ||
           (s.track_tags ?? []).some((t) => t.includes(q)))
     );
-  }, [all, tab, tag, query]);
+    // When strict matching is on, surface compatible songs first.
+    if (!strictMix || lanes.length === 0) return matches;
+    const scored = matches.map((stem) => ({
+      stem,
+      compat: compatibilityOfStem({ lanes, projectBpm, bpmTolerance }, {
+        id: stem.id,
+        kind: stem.kind,
+        track_title: stem.track_title,
+        artist_name: stem.artist_name,
+        peaks_json: "[]", // compatibility doesn't look at the waveform
+        track_duration: stem.track_duration,
+        track_bpm: stem.track_bpm,
+        track_key: stem.track_key,
+      }),
+    }));
+    scored.sort((a, b) => rank(a.compat) - rank(b.compat));
+    return scored.map((s) => s.stem);
+  }, [all, tab, tag, query, strictMix, lanes, projectBpm, bpmTolerance]);
 
   const asTrack = (stem: StemWithTrack) => ({ stemId: stem.id, title: stem.track_title, artist: stem.artist_name, kind: stem.kind });
 
@@ -114,6 +143,7 @@ export default function LibraryBrowser({
       peaks_json: JSON.stringify(peaksById.get(stem.id) ?? []),
       track_duration: stem.track_duration,
       track_bpm: stem.track_bpm,
+      track_key: stem.track_key,
     });
     router.push("/studio");
   }
@@ -175,8 +205,24 @@ export default function LibraryBrowser({
           {filtered.map((stem) => {
             const isCurrent = preview.current?.stemId === stem.id;
             const isPlaying = isCurrent && preview.playing;
+            const compat = strictMix && lanes.length > 0
+              ? compatibilityOfStem({ lanes, projectBpm, bpmTolerance }, {
+                  id: stem.id,
+                  kind: stem.kind,
+                  track_title: stem.track_title,
+                  artist_name: stem.artist_name,
+                  peaks_json: "[]", // compatibility doesn't look at the waveform
+                  track_duration: stem.track_duration,
+                  track_bpm: stem.track_bpm,
+                  track_key: stem.track_key,
+                })
+              : null;
+            const blocked = !!compat && !compat.compatible && !compat.unknown;
             return (
-              <div key={stem.id} className="rounded-xl border border-border bg-surface p-4">
+              <div
+                key={stem.id}
+                className={`rounded-xl border border-border bg-surface p-4 ${blocked ? "opacity-60" : ""}`}
+              >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
                     <SongArt stemId={stem.id} title={stem.track_title} artist={stem.artist_name} peaks={peaksById.get(stem.id)} hasCover={stem.track_has_cover} className="h-11 w-11 rounded-lg" />
@@ -252,10 +298,18 @@ export default function LibraryBrowser({
                   />
                 </div>
 
+                {compat && !compat.compatible && (
+                  <p className={`mt-2 text-[11px] ${compat.unknown ? "text-muted" : "text-brand-strong"}`}>
+                    {compat.unknown ? "Not analyzed yet — add with care." : `Doesn't fit: ${compat.reason}`}
+                  </p>
+                )}
+
                 <div className="mt-3 flex items-center gap-3">
                   <button
                     onClick={() => handleAddToStudio(stem)}
-                    className="flex-1 rounded-lg border border-border py-2 text-sm font-medium transition-colors hover:bg-surface-hover pointer-coarse:py-2.5"
+                    disabled={blocked}
+                    title={blocked ? `Doesn't fit the project: ${compat?.reason}` : undefined}
+                    className="flex-1 rounded-lg border border-border py-2 text-sm font-medium transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent pointer-coarse:py-2.5"
                   >
                     + Add to Studio
                   </button>

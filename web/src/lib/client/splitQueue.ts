@@ -577,7 +577,7 @@ class SplitHelper {
       stillOurs();
       const file = new File([bytes], job.filename);
       // The user's own uploads go first; this waits for them.
-      const { result, duration } = await splitSong(file, onStage, { own: false, signal: lost.signal });
+      const { result, duration, musicalKey } = await splitSong(file, onStage, { own: false, signal: lost.signal });
       await checkIn();
       stillOurs();
 
@@ -586,7 +586,7 @@ class SplitHelper {
         await fetch(`/api/split-jobs/${job.id}/track`, {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify(splitTrackPayload(file, result, duration, [])),
+          body: JSON.stringify(splitTrackPayload(file, result, duration, [], musicalKey)),
         }),
         "Couldn't save the split"
       );

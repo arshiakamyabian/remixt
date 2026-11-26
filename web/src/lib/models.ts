@@ -13,6 +13,7 @@ export type TrackRow = {
   error: string | null;
   duration: number | null;
   bpm: number | null;
+  music_key?: string | null;
   original_url: string;
   created_at: Date;
   /** Added by lib/schema.ts; missing on a database that predates it. */
@@ -98,7 +99,7 @@ export async function getStemsByKindWithArtist(
   await ensureSchema();
   return sql<StemWithTrack[]>`
     SELECT stems.*, tracks.title as track_title, tracks.tags as track_tags, tracks.duration as track_duration,
-           tracks.bpm as track_bpm, users.artist_name, users.id as artist_id, tracks.cover_key IS NOT NULL AS track_has_cover,
+           tracks.bpm as track_bpm, tracks.music_key as track_key, users.artist_name, users.id as artist_id, tracks.cover_key IS NOT NULL AS track_has_cover,
            (tracks.visibility <> 'public' OR stems.held_back) AS track_private, tracks.owner_id = ${viewerId ?? ""} AS track_mine
     FROM stems
     JOIN tracks ON tracks.id = stems.track_id
@@ -131,7 +132,7 @@ export async function getLibraryStems(viewerId: string | null): Promise<StemWith
 export async function getStemById(id: string): Promise<StemWithTrack | undefined> {
   const rows = await sql<StemWithTrack[]>`
     SELECT stems.*, tracks.title as track_title, '{}'::text[] as track_tags, tracks.duration as track_duration,
-           tracks.bpm as track_bpm, users.artist_name, users.id as artist_id, tracks.cover_key IS NOT NULL AS track_has_cover
+           tracks.bpm as track_bpm, tracks.music_key as track_key, users.artist_name, users.id as artist_id, tracks.cover_key IS NOT NULL AS track_has_cover
     FROM stems
     JOIN tracks ON tracks.id = stems.track_id
     JOIN users ON users.id = tracks.owner_id

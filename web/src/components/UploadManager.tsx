@@ -30,6 +30,7 @@ type Track = {
   error: string | null;
   duration: number | null;
   bpm: number | null;
+  music_key?: string | null;
   created_at: string;
   stems: Stem[];
   tags?: string[];
@@ -173,6 +174,7 @@ export default function UploadManager({ youtubeImport }: { youtubeImport: boolea
       peaks_json: stem.peaks_json,
       track_duration: track.duration,
       track_bpm: track.bpm,
+      track_key: track.music_key ?? null,
     });
     router.push("/studio");
   }

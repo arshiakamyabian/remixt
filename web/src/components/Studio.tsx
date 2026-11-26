@@ -248,7 +248,9 @@ export default function Studio({ user }: { user: User | null }) {
       }
       audioEngine.stop();
       store.clearLanes();
-      for (const stem of [found.beat, found.vocal]) store.addStem(stem);
+      // A challenge pair is picked to go together: bypass the strict-match
+      // gate so the vocal isn't blocked if its key is two steps from the beat's.
+      for (const stem of [found.beat, found.vocal]) store.addStem(stem, { bypassGate: true });
       store.setChallenge({ id: found.id, title: found.title });
       resetHistory();
       markDraftClean();
@@ -276,7 +278,8 @@ export default function Studio({ user }: { user: User | null }) {
       audioEngine.stop();
       store.clearLanes();
       // The beat first, so the vocal sits on top in the lane list.
-      for (const stem of [...found].sort((a, b) => (a.kind === "vocals" ? 1 : 0) - (b.kind === "vocals" ? 1 : 0))) store.addStem(stem);
+      // The user explicitly opened these stems via the URL: bypass the gate.
+      for (const stem of [...found].sort((a, b) => (a.kind === "vocals" ? 1 : 0) - (b.kind === "vocals" ? 1 : 0))) store.addStem(stem, { bypassGate: true });
       resetHistory();
       markDraftDirty();
       // Off the address, so a reload doesn't ask again.

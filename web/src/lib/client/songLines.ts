@@ -102,6 +102,7 @@ export function addLines(stems: LoadableStem[]): string[] {
       peaks_json: stem.peaks_json,
       track_duration: stem.track_duration,
       track_bpm: stem.track_bpm,
+      track_key: stem.track_key,
     })
   );
 }

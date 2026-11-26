@@ -6,7 +6,8 @@ import { CheckIcon, Drum, Guitar, Headphones, Layers, Mic, Pause, Piano, Play, P
 import { audioEngine } from "@/lib/client/audioEngine";
 import Waveform from "./Waveform";
 import { previewPlayer, usePreviewState } from "@/lib/client/previewPlayer";
-import { useStudioStore, type LoadableStem } from "@/lib/client/studioStore";
+import { compatibilityOfStem, useStudioStore, type LoadableStem } from "@/lib/client/studioStore";
+import type { Compatibility } from "@/lib/client/mixCompatibility";
 import { startNewStep, undo, useStudioHistory } from "@/lib/client/studioHistory";
 import { useStudioView, type LibraryTab } from "@/lib/client/studioView";
 import { fetchStemRows, keptStemRows } from "@/lib/client/stemList";
@@ -20,6 +21,7 @@ type StemWithTrack = SongStem & {
   track_bpm: number | null;
   /** The song has a cover picture (else SongArt draws one). */
   track_has_cover?: boolean;
+  track_key: string | null;
 };
 
 type ListedStem = StemWithTrack & { peaks: number[] };
@@ -176,11 +178,12 @@ function TakeBadge({ mine }: { mine: boolean }) {
 }
 
 /** A whole song: preview it, add every line in one tap, or pick lines one by one. */
-function SongRow({ song, inMix, previewing, playing, progress }: { song: Song & { peaks: number[] }; inMix: Set<string>; previewing: boolean; playing: boolean; progress: number }) {
+function SongRow({ song, inMix, compat, previewing, playing, progress }: { song: Song & { peaks: number[] }; inMix: Set<string>; compat: Compatibility | null; previewing: boolean; playing: boolean; progress: number }) {
   const kinds = kindsOf(song);
   const lines = allLines(song);
   const allIn = lines.length > 0 && lines.every((s) => inMix.has(s.id));
   const someIn = kinds.some((k) => inMix.has(song.stems[k]!.id));
+  const blocked = !!compat && !compat.compatible && !compat.unknown;
   // What the play button plays: the beat (the song without its voice), else whatever it has.
   const sample = song.stems.beat ?? song.stems.other ?? song.stems.vocals ?? lines[0];
   return (
@@ -219,10 +222,11 @@ function SongRow({ song, inMix, previewing, playing, progress }: { song: Song & 
         <WithMixButton stems={lines.filter((s) => !inMix.has(s.id))} title={song.title} disabled={someIn} />
         <button
           onClick={() => (allIn ? takeOut(lines.map((s) => s.id), song.title) : add(lines.filter((s) => !inMix.has(s.id))))}
-          className={`group flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors pointer-coarse:px-3 pointer-coarse:py-2 ${
+          disabled={!allIn && blocked}
+          className={`group flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:px-3 pointer-coarse:py-2 ${
             allIn ? "text-success hover:text-danger" : "bg-brand text-white hover:bg-brand-strong"
           }`}
-          title={allIn ? "Take the whole song back out of the mix" : hasParts(song) ? "Vocals, drums, bass and melody — each a lane of its own" : "The vocal and the beat"}
+          title={allIn ? "Take the whole song back out of the mix" : blocked ? `Doesn't fit the project: ${compat?.reason}` : hasParts(song) ? "Vocals, drums, bass and melody — each a lane of its own" : "The vocal and the beat"}
           aria-label={allIn ? `Remove every line of ${song.title}` : `Add every line of ${song.title}`}
         >
           {allIn ? (
@@ -264,6 +268,11 @@ function SongRow({ song, inMix, previewing, playing, progress }: { song: Song & 
           );
         })}
       </div>
+      {compat && !compat.compatible && (
+        <p className={`mt-1 pl-8 text-[10.5px] ${compat.unknown ? "text-muted" : "text-brand-strong"} pointer-coarse:pl-11`}>
+          {compat.unknown ? "Not analyzed yet" : `Doesn't fit: ${compat.reason}`}
+        </p>
+      )}
       {lines.some((l) => audition?.stemIds.includes(l.id)) && <AuditionBar />}
       <Waveform peaks={song.peaks} color={previewing ? "var(--brand)99" : "var(--brand)"} progressColor="var(--brand)" progress={previewing ? progress : 0} height={18} className="mt-1.5" />
     </div>
@@ -280,12 +289,20 @@ export default function StudioLibraryPanel() {
    */
   const [takeFilter, setTakeFilter] = useState<TakeFilter>("all");
   const lanes = useStudioStore((s) => s.lanes);
+  const strictMix = useStudioStore((s) => s.strictMix);
+  const projectBpm = useStudioStore((s) => s.projectBpm);
+  const bpmTolerance = useStudioStore((s) => s.bpmTolerance);
   const preview = usePreviewState();
   useAudition();
   // Taken out some other way (undo, the lane's own delete): nothing left to keep or drop.
   useEffect(() => {
     if (audition && !lanes.some((l) => audition!.stemIds.includes(l.stemId))) setAudition(null);
   }, [lanes]);
+
+  const compatOf = (stem: LoadableStem): Compatibility | null => {
+    if (!strictMix || lanes.length === 0) return null;
+    return compatibilityOfStem({ lanes, projectBpm, bpmTolerance }, stem);
+  };
 
   // Asked for a tab from elsewhere ("+ Add a vocal" in the Easy studio): show it.
   const asked = useStudioView((s) => s.libraryTab);
@@ -342,8 +359,13 @@ export default function StudioLibraryPanel() {
     (song) =>
       passes(isTake(song.tags) && song.mine) && matches({ track_title: song.title, artist_name: song.artist, track_tags: song.tags })
   );
-  const stems =
-    tab === "songs" ? [] : (all ?? []).filter((s) => s.kind === tab && passes(isTake(s.track_tags) && !!s.track_mine) && matches(s));
+  const stems = (() => {
+    if (tab === "songs") return [] as ListedStem[];
+    const list = (all ?? []).filter((s) => s.kind === tab && passes(isTake(s.track_tags) && !!s.track_mine) && matches(s));
+    if (!strictMix || lanes.length === 0) return list;
+    const rankCompat = (c: Compatibility | null) => (c?.compatible ? 0 : c?.unknown ? 1 : c ? 2 : 0);
+    return [...list].sort((a, b) => rankCompat(compatOf(a)) - rankCompat(compatOf(b)));
+  })();
   const accent = tab === "songs" ? "var(--brand)" : KIND_INFO[tab].color;
   const addedStemIds = new Set(lanes.map((l) => l.stemId));
   const empty = tab === "songs" ? shownSongs.length === 0 : stems.length === 0;
@@ -417,15 +439,20 @@ export default function StudioLibraryPanel() {
           {tab === "songs" &&
             shownSongs.map((song) => {
               const previewing = !!preview.current && Object.values(song.stems).some((s) => s?.id === preview.current?.stemId);
-              return <SongRow key={song.trackId} song={song} inMix={addedStemIds} previewing={previewing} playing={preview.playing} progress={preview.progress} />;
+              // Representative stem for the song's compat (same track → same BPM/key).
+              const anyStem = song.stems.beat ?? song.stems.vocals ?? song.stems.other ?? song.stems.drums ?? song.stems.bass;
+              const compat = anyStem ? compatOf(anyStem) : null;
+              return <SongRow key={song.trackId} song={song} inMix={addedStemIds} compat={compat} previewing={previewing} playing={preview.playing} progress={preview.progress} />;
             })}
           {stems.map((stem) => {
             const added = addedStemIds.has(stem.id);
             const previewing = preview.current?.stemId === stem.id;
+            const compat = compatOf(stem);
+            const blocked = !!compat && !compat.compatible && !compat.unknown;
             return (
               <div
                 key={stem.id}
-                className={`rounded-lg border p-2 transition-colors ${
+                className={`rounded-lg border p-2 transition-colors ${blocked ? "opacity-60" : ""} ${
                   previewing
                     ? "border-brand bg-surface-hover"
                     : added
@@ -458,9 +485,10 @@ export default function StudioLibraryPanel() {
                   <WithMixButton stems={[stem]} title={stem.track_title} disabled={added} />
                   <button
                     onClick={() => (added ? takeOut([stem.id], stem.track_title) : add([stem]))}
-                    title={added ? "Take it back out of the mix" : undefined}
+                    disabled={!added && blocked}
+                    title={added ? "Take it back out of the mix" : blocked ? `Doesn't fit the project: ${compat?.reason}` : undefined}
                     aria-label={added ? `Remove ${stem.track_title} from the mix` : `Add ${stem.track_title} to the mix`}
-                    className={`group shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors pointer-coarse:rounded-lg pointer-coarse:px-3 pointer-coarse:py-2 pointer-coarse:text-xs ${
+                    className={`group shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:rounded-lg pointer-coarse:px-3 pointer-coarse:py-2 pointer-coarse:text-xs ${
                       added
                         ? "border-transparent text-success hover:border-danger/60 hover:text-danger"
                         : "border-border text-muted hover:border-brand/60 hover:text-foreground"
@@ -481,6 +509,11 @@ export default function StudioLibraryPanel() {
                   {stem.artist_name}
                   {stem.track_bpm ? ` · ${stem.track_bpm.toFixed(0)} BPM` : ""}
                 </p>
+                {compat && !compat.compatible && (
+                  <p className={`mt-0.5 truncate pl-8 text-[10.5px] ${compat.unknown ? "text-muted" : "text-brand-strong"} pointer-coarse:pl-11`}>
+                    {compat.unknown ? "Not analyzed yet" : `Doesn't fit: ${compat.reason}`}
+                  </p>
+                )}
                 <Waveform
                   peaks={stem.peaks}
                   color={previewing ? `${accent}99` : accent}
